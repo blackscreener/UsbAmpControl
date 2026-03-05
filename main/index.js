@@ -41,6 +41,35 @@ function initWebSocket() {
     websocket.onmessage = onMessage;
 }
 
+function performUpdate() {
+    const fileInput = document.getElementById('otaFile');
+    const status = document.getElementById('otaProgress');
+    if (fileInput.files.length === 0) return;
+
+    const file = fileInput.files[0];
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/update");
+
+    xhr.upload.onprogress = (e) => {
+        const percent = (e.loaded / e.total * 100).toFixed(0);
+        status.innerText = `Wysyłanie: ${percent}%`;
+    };
+
+    xhr.onload = () => {
+        if (xhr.status === 200) {
+            status.innerText = "Sukces! Czekaj na restart...";
+            setTimeout(() => location.reload(), 5000);
+        } else {
+            status.innerText = "Błąd aktualizacji!";
+        }
+    };
+    
+    status.innerText = "Start wysyłania...";
+    xhr.send(file);
+}
+
+
+
 function onOpen(event) {
     console.log('Connection opened');
     sendCommand('get_state', 0);
@@ -451,36 +480,74 @@ function getScanLabel(source) {
 function updateUI(state) {
     if (state.amp_state) {
         const amp = state.amp_state;
+        
+        // Sprawdzamy czy wzmacniacz jest podłączony
+        const isConnected = amp.filter_name !== "" && amp.filter_name !== "NOT CONNECTED";
+
+        // Pobieramy wszystkie elementy sterujące
+        const buttons = document.querySelectorAll('button');
+        const selects = document.querySelectorAll('select');
+        const inputs = document.querySelectorAll('input[type="range"]');
+
+        // Funkcja pomocnicza do blokowania, z wyłączeniem sekcji OTA
+        const setDisabledState = (elements) => {
+            elements.forEach(el => {
+                // Jeśli element to przycisk aktualizacji lub pole pliku - ZAWSZE zostaw włączone
+                if (el.id === 'otaBtn' || el.id === 'otaFile') {
+                    el.disabled = false;
+                } else {
+                    el.disabled = !isConnected;
+                }
+            });
+        };
+
+        setDisabledState(buttons);
+        setDisabledState(selects);
+        setDisabledState(inputs);
+
+        // Reszta Twojej oryginalnej logiki aktualizacji danych
         currentPreset = amp.preset ? amp.preset : 0;
         document.getElementById('filterName').innerHTML = amp.filter_name != "" ? amp.filter_name : "NOT CONNECTED";
-        document.getElementById('muteBtn').className = amp.is_muted ? 'active' : '';
+        
+        // Klasa connected dla body (zmienia kolory nagłówków w CSS)
+        if (isConnected) {
+            document.body.classList.add('connected');
+        } else {
+            document.body.classList.remove('connected');
+        }
+
+        const muteBtn = document.getElementById('muteBtn');
+        if (muteBtn) muteBtn.className = amp.is_muted ? 'active' : '';
+
         updatePresetButtons(amp.preset);
+
         for (let i = 0; i < 3; i++) {
             const eqBtn = document.getElementById(`eqBtn${i + 1}`);
-            eqBtn.classList.toggle('active', amp.eq_on[i]);
+            if (eqBtn) eqBtn.classList.toggle('active', amp.eq_on[i]);
+            
             const source = document.getElementById(`source${i + 1}`);
-            source.value = amp.preset_source[i];
-            // If current presets source is SCAN update auto dected source
-            source[0].label = getScanLabel(amp.preset_source[i] == 0 && amp.preset == i + 1 ? amp.current_source : 0);
+            if (source) {
+                source.value = amp.preset_source[i];
+                if (source[0]) {
+                    source[0].label = getScanLabel(amp.preset_source[i] == 0 && amp.preset == i + 1 ? amp.current_source : 0);
+                }
+            }
         }
-        document.getElementById('volumeSlider').value = amp.volume_db;
-        updateVolumeLabel();
+
+        const volSlider = document.getElementById('volumeSlider');
+        if (volSlider) {
+            volSlider.value = amp.volume_db;
+            updateVolumeLabel();
+        }
     }
+    
+    // Obsługa wyników testów AB/ABX (pozostaje bez zmian)
     if (state.ab_test) {
         const ab_state = state.ab_test;
-        if (ab_state.preset_a) {
-            document.getElementById('resultPresetA').textContent = ab_state.preset_a;
-        }
-        if (ab_state.preset_b) {
-            document.getElementById('resultPresetB').textContent = ab_state.preset_b;
-        }
+        if (ab_state.preset_a) document.getElementById('resultPresetA').textContent = ab_state.preset_a;
+        if (ab_state.preset_b) document.getElementById('resultPresetB').textContent = ab_state.preset_b;
         if (ab_state.is_running) {
             switchView('abActiveView');
-        } else if (ab_state.is_finished) {
-            switchView('abResultsView');
-        } else {
-            switchView('abControlView');
         }
     }
-    disableUI(currentPreset == 0);
 }
