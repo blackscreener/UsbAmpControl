@@ -14,6 +14,12 @@
 #include "nvs_flash.h"
 #include "secrets.h"
 #include "usb_driver.h"
+#include "mqtt_handler.h"
+#include "esp_ota_ops.h"
+#include "esp_flash_partitions.h"
+#include "esp_partition.h"
+#include <sys/param.h>
+#include "ota_handler.h"  // DODAJ TEJ LINII
 
 #define MDNS_HOST_NAME "amp"  // amp.local
 #define MAX_CLIENTS 7         // Should Max(CONFIG_LWIP_MAX_SOCKETS-3)
@@ -97,6 +103,14 @@ void notify_state_changed(const state_t *state) {
     get_filter_name(&filter_name[0]);
     cJSON_AddStringToObject(amp_state_json, "filter_name", filter_name);
     cJSON_AddItemToObject(root, "amp_state", amp_state_json);
+  
+        // DODAJ: Publikuj stan USB do MQTT
+        bool usb_connected = is_device_connected();
+        mqtt_publish_usb_connected(usb_connected);
+        mqtt_notify_state_changed(state);
+    
+    // DODAJ TEJ LINII - to jest ważne dla MQTT!
+    mqtt_notify_state_changed(state);
   }
 
   // A/B Test Status
@@ -111,7 +125,7 @@ void notify_state_changed(const state_t *state) {
     xSemaphoreGive(ab_test_mutex);
     cJSON_AddItemToObject(root, "ab_test", ab_test_json);
   }
-
+  mqtt_notify_state_changed(state);
   send_to_clients(root);
   cJSON_Delete(root);
 }
@@ -388,7 +402,82 @@ static void client_disconnect_handler(void *arg, int sockfd) {
   }
 }
 
+esp_err_t update_post_handler(httpd_req_t *req) {
+    char buf[1024];
+    esp_ota_handle_t update_handle = 0;
+    const esp_partition_t *update_partition = esp_ota_get_next_update_partition(NULL);
+
+    if (update_partition == NULL) {
+        ESP_LOGE("WEB_SERVER", "Nie znaleziono partycji do aktualizacji!");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI("WEB_SERVER", "Rozpoczynanie OTA na partycję: %s", update_partition->label);
+
+    esp_err_t err = esp_ota_begin(update_partition, OTA_SIZE_UNKNOWN, &update_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE("WEB_SERVER", "Błąd esp_ota_begin!");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    int remaining = req->content_len;
+    while (remaining > 0) {
+        int recv_len = httpd_req_recv(req, buf, MIN(remaining, sizeof(buf)));
+        if (recv_len <= 0) {
+            if (recv_len == HTTPD_SOCK_ERR_TIMEOUT) continue;
+            ESP_LOGE("WEB_SERVER", "Błąd odbioru danych OTA!");
+            esp_ota_abort(update_handle);
+            httpd_resp_send_500(req);
+            return ESP_FAIL;
+        }
+        err = esp_ota_write(update_handle, buf, recv_len);
+        if (err != ESP_OK) {
+            ESP_LOGE("WEB_SERVER", "Błąd zapisu do OTA!");
+            esp_ota_abort(update_handle);
+            httpd_resp_send_500(req);
+            return ESP_FAIL;
+        }
+        remaining -= recv_len;
+    }
+
+    err = esp_ota_end(update_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE("WEB_SERVER", "Błąd esp_ota_end!");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    err = esp_ota_set_boot_partition(update_partition);
+    if (err != ESP_OK) {
+        ESP_LOGE("WEB_SERVER", "Błąd ustawiania partycji boot!");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI("WEB_SERVER", "Aktualizacja zakończona. Restart...");
+    httpd_resp_sendstr(req, "Aktualizacja udana! Urządzenie uruchomi się ponownie...");
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    esp_restart();
+    return ESP_OK;
+}
+
+
+
+
 static httpd_handle_t start_webserver(void) {
+  
+  
+httpd_uri_t update_post = {
+    .uri      = "/update",
+    .method   = HTTP_POST,
+    .handler  = update_post_handler,
+    .user_ctx = NULL
+};
+  
+  
+  
   httpd_handle_t server_handle = NULL;
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.max_open_sockets = MAX_CLIENTS;
@@ -399,6 +488,8 @@ static httpd_handle_t start_webserver(void) {
   config.linger_timeout = 1;
 
   if (httpd_start(&server_handle, &config) == ESP_OK) {
+   
+    httpd_register_uri_handler(server_handle, &update_post);  // DOBRZE
     // web socket
     httpd_uri_t ws_uri = {.uri = "/ws",
                           .method = HTTP_GET,
@@ -459,10 +550,14 @@ void web_server_task(void *arg) {
   ab_test_mutex = xSemaphoreCreateMutexStatic(&ab_test_mutex_buffer);
   memset(&ab_test_state, 0, sizeof(ab_test_state_t));
 
-  ESP_ERROR_CHECK(nvs_flash_init());
-  ESP_ERROR_CHECK(esp_netif_init());
-  ESP_ERROR_CHECK(esp_event_loop_create_default());
+ // ESP_ERROR_CHECK(nvs_flash_init());
+ // ESP_ERROR_CHECK(esp_netif_init());
+ // ESP_ERROR_CHECK(esp_event_loop_create_default());
   esp_netif_create_default_wifi_sta();
+
+  // DODAJ TEJ LINIE - ustaw hostname dla WiFi
+  esp_netif_set_hostname(esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"), "usbamp");
+ 
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
   ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
