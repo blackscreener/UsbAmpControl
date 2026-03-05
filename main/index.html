@@ -231,6 +231,14 @@
             <button onclick="stopABXTest()" class="stop-btn">Stop Test</button>
         </div>
 
+        <div class="control-group">
+            <h3>System Update</h3>
+            <input type="file" id="otaFile" style="display:none" onchange="performUpdate()">
+            <button id="otaBtn" onclick="document.getElementById('otaFile').click()" class="primary-btn">Wybierz plik .bin</button>
+            <div id="otaProgress" style="margin-top:10px; font-size: 0.8em; text-align: center;"></div>
+        </div>
+
+
         <!-- Results View -->
         <div id="abxResultsView" style="display:none;">
             <div class="control-group">
