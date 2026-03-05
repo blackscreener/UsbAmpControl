@@ -8,11 +8,20 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "usb/usb_host.h"
+#include "mqtt_handler.h"
+#include "nvs_flash.h"
+#include "esp_netif.h"
+#include "esp_event.h"
+
 
 #define USB_LIB_TASK_PRIORITY 2
 #define CLASS_TASK_PRIORITY 3
 #define TRIGGER_TASK_PRIORITY 3
 #define WEB_SERVER_TASK_PRIORITY 4
+
+// Zmień na większy rozmiar stosu
+#define MQTT_TASK_PRIORITY 3
+#define MQTT_TASK_STACK_SIZE 8192  // Zwiększ z domyślnych 4096
 
 // *** IO PIN CONFIGURATION ***
 #define TRIGGER_PIN_PRESET_1 GPIO_NUM_4
@@ -156,40 +165,72 @@ static void usb_host_lib_task(void *arg) {
 
 void app_main(void) {
   ESP_LOGI("APP_MAIN", "Starting app main...");
+
+  // Inicjalizacja TCP/IP
+  esp_err_t ret = nvs_flash_init();
+  if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    ret = nvs_flash_init();
+  }
+  ESP_ERROR_CHECK(ret);
+  
+  ESP_ERROR_CHECK(esp_netif_init());
+  ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+
+  // Krótka pauza dla stabilności sieci
+  vTaskDelay(pdMS_TO_TICKS(500));
+
   SemaphoreHandle_t host_lib_installed = xSemaphoreCreateBinary();
   SemaphoreHandle_t hypex_state_updated = xSemaphoreCreateBinary();
 
+  // Deklaracje uchwytów zadań - DODAJ mqtt_task_hdl
   TaskHandle_t host_lib_task_hdl, class_driver_task_hdl, trigger_task_hdl,
-      web_server_task_hdl;
+      web_server_task_hdl, mqtt_task_hdl;
   BaseType_t task_created;
 
+  // Create MQTT task FIRST (with larger stack)
+  task_created = xTaskCreatePinnedToCore(
+      mqtt_app_start_task, 
+      "mqtt_task", 
+      16384,     
+      NULL, 
+      2,         
+      &mqtt_task_hdl, 
+      0);
+  assert(task_created == pdTRUE);
+  
   // Create host lib task
   task_created = xTaskCreatePinnedToCore(
       usb_host_lib_task, "usb_host", 4096, (void *)host_lib_installed,
       USB_LIB_TASK_PRIORITY, &host_lib_task_hdl, 1);
   assert(task_created == pdTRUE);
+  
   xSemaphoreTake(host_lib_installed, portMAX_DELAY);
+  
   // Create client task
   task_created = xTaskCreatePinnedToCore(
       usb_driver_task, "driver", 4096, (void *)hypex_state_updated,
       CLASS_TASK_PRIORITY, &class_driver_task_hdl, 1);
   assert(task_created == pdTRUE);
+  
   // Create trigger monitor task
   task_created = xTaskCreatePinnedToCore(
       trigger_monitor_task, "trigger_monitor", 4096, NULL,
       TRIGGER_TASK_PRIORITY, &trigger_task_hdl, 0);
   assert(task_created == pdTRUE);
+  
   // Create web server task
   task_created = xTaskCreatePinnedToCore(web_server_task, "web_server_task",
                                          4096, NULL, WEB_SERVER_TASK_PRIORITY,
                                          &web_server_task_hdl, 0);
   assert(task_created == pdTRUE);
+  
   while (1) {
     if (xSemaphoreTake(hypex_state_updated, portMAX_DELAY) == pdTRUE) {
       ESP_LOGI(TAG, "New data inform web server");
       state_t current_state;
       get_state(&current_state);
-      // TODO should I use a queue here?
       notify_state_changed(&current_state);
     }
   }
