@@ -6,6 +6,7 @@ idf_component_register(
     "web_server.h"
     "web_server.c"
     "secrets.h"
+    "mqtt_handler.c"
   INCLUDE_DIRS "."
   EMBED_TXTFILES
     index.html
@@ -21,4 +22,6 @@ idf_component_register(
     esp_http_server
     esp_wifi
     nvs_flash
+    mqtt
+    app_update
 )
