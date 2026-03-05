@@ -6,5 +6,6 @@
 
 void web_server_task(void *arg);
 void notify_state_changed(const state_t *state);
+void mqtt_publish_usb_connected(bool connected);
 
 #endif  // WEB_SERVER_H
