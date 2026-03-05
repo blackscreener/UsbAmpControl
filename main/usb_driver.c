@@ -407,10 +407,17 @@ static void action_open_dev(class_driver_t *driver_obj) {
   driver_obj->in_transfer->device_handle = driver_obj->dev_hdl;
   driver_obj->out_transfer->device_handle = driver_obj->dev_hdl;
   device_is_connected = true;
+    // DODAJ: Opublikuj zmianę stanu USB
+    extern void mqtt_publish_usb_connected(bool connected);
+    mqtt_publish_usb_connected(true);
+
 }
 
 static void action_close_dev(class_driver_t *driver_obj) {
   device_is_connected = false;
+    // DODAJ: Opublikuj zmianę stanu USB
+    extern void mqtt_publish_usb_connected(bool connected);
+    mqtt_publish_usb_connected(false);
   // Remove pending commands
   xQueueReset(command_queue);
   // Close device
